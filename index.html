@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Раннер с персонажем</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            /* Предотвращаем скроллинг на мобильных устройствах при смахивании */
+            touch-action: none; 
+            -webkit-touch-callout: none;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+        canvas {
+            display: block;
+            margin: 0 auto;
+            background: linear-gradient(to bottom, #87CEEB 0%, #E0F6FF 100%); /* Небо */
+            border-radius: 12px;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+            max-width: 100%;
+            height: auto;
+            /* Делаем пиксель-арт более четким, если это необходимо */
+            image-rendering: -moz-crisp-edges;
+            image-rendering: -webkit-optimize-contrast;
+            image-rendering: crisp-edges;
+            image-rendering: pixelated;
+        }
+        @keyframes bounce {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-5px); }
+        }
+        .animate-bounce-slow {
+            animation: bounce 2s infinite ease-in-out;
+        }
+    </style>
+</head>
+<body class="bg-gray-800 flex items-center justify-center h-screen overflow-hidden font-sans">
+
+    <!-- Игровой контейнер -->
+    <div class="relative w-full max-w-4xl px-2 sm:px-4">
+        
+        <!-- UI Слой -->
+        <div id="ui-layer" class="absolute inset-0 pointer-events-none flex flex-col justify-between p-4 sm:p-8 z-10">
+            <!-- Счётчики -->
+            <div class="flex justify-between items-start w-full text-xl sm:text-2xl font-extrabold text-gray-800 drop-shadow-md px-4 pt-2">
+                <div>Счет: <span id="score" class="text-blue-600">0</span></div>
+                <div>Рекорд: <span id="high-score" class="text-yellow-500">0</span></div>
+            </div>
+
+            <!-- Стартовый экран -->
+            <div id="start-screen" class="pointer-events-auto absolute inset-0 flex flex-col items-center justify-center bg-black/60 rounded-xl mx-2 sm:mx-4 my-2 sm:my-0 backdrop-blur-sm transition-opacity duration-300">
+                <img src="https://raw.githubusercontent.com/jonter/evolute-clicker/refs/heads/main/Char.png" alt="Персонаж" class="w-24 h-24 mb-6 animate-bounce-slow scale-x-[-1]" id="preview-img" style="display: none;">
+                <div id="loading-text" class="text-white text-xl mb-4 font-bold animate-pulse">Загрузка ресурсов...</div>
+                <h1 class="text-3xl sm:text-5xl font-black mb-4 text-white tracking-wider text-center" style="display: none;" id="game-title">БЕГУЩИЙ ГЕРОЙ</h1>
+                <p class="mb-8 text-gray-200 text-center max-w-md px-4" style="display: none;" id="game-desc">Нажимайте <b class="text-white">Пробел</b>, <b class="text-white">Стрелку Вверх</b> или <b class="text-white">коснитесь экрана</b>, чтобы прыгать через препятствия.</p>
+                <button id="start-btn" class="hidden bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700 text-white font-bold py-3 sm:py-4 px-8 sm:px-10 rounded-full text-xl sm:text-2xl transition transform hover:scale-105 shadow-lg shadow-blue-500/50">Начать игру</button>
+            </div>
+
+            <!-- Экран конца игры -->
+            <div id="game-over-screen" class="hidden pointer-events-auto absolute inset-0 flex flex-col items-center justify-center bg-black/70 rounded-xl mx-2 sm:mx-4 my-2 sm:my-0 backdrop-blur-sm transition-opacity duration-300">
+                <h1 class="text-4xl sm:text-6xl font-black mb-2 text-red-500 tracking-wider">ИГРА ОКОНЧЕНА</h1>
+                <p class="text-xl sm:text-2xl mb-8 text-gray-200">Ваш результат: <span id="final-score" class="font-bold text-white text-3xl">0</span></p>
+                <button id="restart-btn" class="bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white font-bold py-3 sm:py-4 px-8 sm:px-10 rounded-full text-xl sm:text-2xl transition transform hover:scale-105 shadow-lg shadow-green-500/50">Играть снова</button>
+            </div>
+        </div>
+        
+        <!-- Холст игры -->
+        <canvas id="gameCanvas" width="800" height="400" class="w-full"></canvas>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // Элементы UI
+        const scoreEl = document.getElementById('score');
+        const highScoreEl = document.getElementById('high-score');
+        const startScreen = document.getElementById('start-screen');
+        const startBtn = document.getElementById('start-btn');
+        const gameOverScreen = document.getElementById('game-over-screen');
+        const restartBtn = document.getElementById('restart-btn');
+        const finalScoreEl = document.getElementById('final-score');
+        
+        // Элементы загрузки
+        const previewImg = document.getElementById('preview-img');
+        const loadingText = document.getElementById('loading-text');
+        const gameTitle = document.getElementById('game-title');
+        const gameDesc = document.getElementById('game-desc');
+
+        // Загрузка изображения персонажа
+        const charImage = new Image();
+        charImage.crossOrigin = "Anonymous"; // Разрешаем доступ к пикселям с другого домена (CORS)
+        charImage.src = 'https://raw.githubusercontent.com/jonter/evolute-clicker/refs/heads/main/Char.png';
+        let isImageLoaded = false;
+        
+        // Вспомогательный холст для обработки прозрачности
+        const processedCharCanvas = document.createElement('canvas');
+
+        charImage.onload = () => {
+            // Убираем черный фон
+            processedCharCanvas.width = charImage.width;
+            processedCharCanvas.height = charImage.height;
+            const pCtx = processedCharCanvas.getContext('2d');
+            pCtx.drawImage(charImage, 0, 0);
+            
+            try {
+                const imageData = pCtx.getImageData(0, 0, processedCharCanvas.width, processedCharCanvas.height);
+                const data = imageData.data;
+                // Проходим по каждому пикселю
+                for (let i = 0; i < data.length; i += 4) {
+                    // Если пиксель очень темный (почти черный)
+                    if (data[i] < 25 && data[i+1] < 25 && data[i+2] < 25) {
+                        data[i+3] = 0; // Устанавливаем альфа-канал в 0 (прозрачность)
+                    }
+                }
+                pCtx.putImageData(imageData, 0, 0);
+                
+                // Обновляем картинку на стартовом экране на картинку без фона
+                previewImg.src = processedCharCanvas.toDataURL();
+            } catch (e) {
+                console.warn("Не удалось обработать изображение из-за CORS политик, используем оригинал", e);
+            }
+
+            isImageLoaded = true;
+            // Показываем UI старта
+            loadingText.style.display = 'none';
+            previewImg.style.display = 'block';
+            gameTitle.style.display = 'block';
+            gameDesc.style.display = 'block';
+            startBtn.classList.remove('hidden');
+        };
+
+        charImage.onerror = () => {
+            // Если картинка не загрузилась, используем заглушку
+            isImageLoaded = false;
+            loadingText.textContent = "Не удалось загрузить изображение. Используется заглушка.";
+            setTimeout(() => {
+                loadingText.style.display = 'none';
+                gameTitle.style.display = 'block';
+                gameDesc.style.display = 'block';
+                startBtn.classList.remove('hidden');
+            }, 1000);
+        };
+
+        // Настройки игры
+        let gameSpeed = 5;
+        const initialGameSpeed = 5;
+        let gravity = 0.6;
+        let score = 0;
+        let highScore = localStorage.getItem('runnerHighScore') || 0;
+        highScoreEl.textContent = highScore;
+        let gameLoopId;
+        let isPlaying = false;
+        let frames = 0;
+
+        // Линия земли
+        const groundHeight = 50;
+        const groundY = canvas.height - groundHeight;
+
+        // Персонаж
+        const player = {
+            x: 50,
+            y: groundY - 60, // Изначальная позиция
+            w: 60,  // Ширина хитбокса
+            h: 60,  // Высота хитбокса
+            dy: 0,
+            jumpForce: -12,
+            grounded: false,
+            
+            draw() {
+                if (isImageLoaded) {
+                    ctx.save(); // Сохраняем текущее состояние холста
+                    
+                    // Переносим точку отсчета координат в центр нашего персонажа
+                    ctx.translate(this.x + this.w / 2, this.y + this.h / 2);
+                    
+                    // Отражаем по горизонтали
+                    ctx.scale(-1, 1);
+                    
+                    // Рисуем обработанный спрайт. Т.к. мы сместили координаты, 
+                    // теперь рисуем относительно центра (минус половина ширины и высоты)
+                    ctx.drawImage(processedCharCanvas, -(this.w / 2 + 10), -(this.h / 2 + 10), this.w + 20, this.h + 20);
+                    
+                    ctx.restore(); // Восстанавливаем состояние холста (чтобы не отразить всю игру)
+                } else {
+                    // Заглушка, если картинка сломалась
+                    ctx.fillStyle = 'blue';
+                    ctx.fillRect(this.x, this.y, this.w, this.h);
+                }
+            },
+            
+            update() {
+                // Применяем гравитацию
+                if (!this.grounded) {
+                    this.dy += gravity;
+                }
+                
+                this.y += this.dy;
+
+                // Проверка столкновения с землей
+                if (this.y + this.h >= groundY) {
+                    this.y = groundY - this.h;
+                    this.dy = 0;
+                    this.grounded = true;
+                } else {
+                    this.grounded = false;
+                }
+            },
+            
+            jump() {
+                if (this.grounded) {
+                    this.dy = this.jumpForce;
+                    this.grounded = false;
+                }
+            }
+        };
+
+        // Препятствия
+        let obstacles = [];
+
+        class Obstacle {
+            constructor() {
+                // Случайный размер препятствия (от 30 до 60)
+                this.h = Math.random() * 30 + 30;
+                this.w = 30;
+                this.x = canvas.width;
+                this.y = groundY - this.h;
+                this.color = '#e74c3c'; // Красный цвет
+            }
+
+            draw() {
+                ctx.fillStyle = this.color;
+                
+                // Рисуем шип/кактус
+                ctx.beginPath();
+                ctx.moveTo(this.x + this.w / 2, this.y); // Верхняя точка
+                ctx.lineTo(this.x + this.w, this.y + this.h); // Правый нижний
+                ctx.lineTo(this.x, this.y + this.h); // Левый нижний
+                ctx.fill();
+                
+                // Декоративные элементы
+                ctx.fillStyle = '#c0392b';
+                ctx.beginPath();
+                ctx.moveTo(this.x + this.w / 2, this.y); 
+                ctx.lineTo(this.x + this.w, this.y + this.h); 
+                ctx.lineTo(this.x + this.w / 2, this.y + this.h); 
+                ctx.fill();
+            }
+
+            update() {
+                this.x -= gameSpeed;
+            }
+        }
+
+        // Декорации (облака)
+        let clouds = [];
+        class Cloud {
+            constructor() {
+                this.x = canvas.width + Math.random() * 100;
+                this.y = Math.random() * (canvas.height / 2);
+                this.w = Math.random() * 50 + 50;
+                this.h = this.w * 0.6;
+                this.speed = Math.random() * 1 + 0.5;
+                this.opacity = Math.random() * 0.5 + 0.3;
+            }
+            draw() {
+                ctx.fillStyle = `rgba(255, 255, 255, ${this.opacity})`;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.h / 2, Math.PI * 0.5, Math.PI * 1.5);
+                ctx.arc(this.x + this.w / 3, this.y - this.h / 4, this.h / 1.5, Math.PI * 1, Math.PI * 2);
+                ctx.arc(this.x + this.w, this.y, this.h / 2, Math.PI * 1.5, Math.PI * 0.5);
+                ctx.closePath();
+                ctx.fill();
+            }
+            update() {
+                this.x -= this.speed + (gameSpeed * 0.1); // Параллакс
+            }
+        }
+
+        function spawnObstacle() {
+            // Спавн зависит от скорости игры
+            let spawnTimer = 100 - Math.floor(gameSpeed * 2);
+            if (spawnTimer < 40) spawnTimer = 40; // Ограничитель минимального времени
+
+            if (frames % spawnTimer === 0) {
+                obstacles.push(new Obstacle());
+            }
+        }
+
+        function spawnClouds() {
+            if (frames % 150 === 0) {
+                clouds.push(new Cloud());
+            }
+        }
+
+        function drawGround() {
+            // Основная земля
+            ctx.fillStyle = '#8B4513'; // Коричневый
+            ctx.fillRect(0, groundY, canvas.width, groundHeight);
+            
+            // Трава сверху
+            ctx.fillStyle = '#228B22'; // Зеленый
+            ctx.fillRect(0, groundY, canvas.width, 10);
+            
+            // Динамические полоски на земле для эффекта скорости
+            ctx.fillStyle = '#6B3410';
+            for (let i = 0; i < 10; i++) {
+                let dashX = ((frames * gameSpeed + i * 100) % canvas.width) * -1 + canvas.width;
+                ctx.fillRect(dashX, groundY + 20, 20, 4);
+                
+                let dashX2 = (((frames * gameSpeed * 0.8) + i * 130 + 50) % canvas.width) * -1 + canvas.width;
+                ctx.fillRect(dashX2, groundY + 35, 15, 3);
+            }
+        }
+
+        function checkCollision(player, obstacle) {
+            // Делаем хитбокс чуть меньше визуального размера для честности
+            const tolerance = 8; 
+            return (
+                player.x + tolerance < obstacle.x + obstacle.w &&
+                player.x + player.w - tolerance > obstacle.x &&
+                player.y + tolerance < obstacle.y + obstacle.h &&
+                player.y + player.h - tolerance > obstacle.y
+            );
+        }
+
+        function gameOver() {
+            isPlaying = false;
+            cancelAnimationFrame(gameLoopId);
+            
+            if (score > highScore) {
+                highScore = score;
+                localStorage.setItem('runnerHighScore', highScore);
+                highScoreEl.textContent = highScore;
+            }
+            
+            finalScoreEl.textContent = score;
+            gameOverScreen.classList.remove('hidden');
+        }
+
+        function resetGame() {
+            player.y = groundY - player.h;
+            player.dy = 0;
+            obstacles = [];
+            clouds = [];
+            score = 0;
+            frames = 0;
+            gameSpeed = initialGameSpeed;
+            scoreEl.textContent = score;
+            
+            startScreen.classList.add('hidden');
+            gameOverScreen.classList.add('hidden');
+            
+            isPlaying = true;
+            
+            // Создаем начальные облака
+            for(let i=0; i<3; i++) {
+                let c = new Cloud();
+                c.x = Math.random() * canvas.width;
+                clouds.push(c);
+            }
+            
+            gameLoop();
+        }
+
+        function gameLoop() {
+            if (!isPlaying) return;
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Отрисовка фона
+            drawGround();
+
+            // Облака
+            spawnClouds();
+            for (let i = 0; i < clouds.length; i++) {
+                clouds[i].update();
+                clouds[i].draw();
+                if (clouds[i].x + clouds[i].w < 0) {
+                    clouds.splice(i, 1);
+                    i--;
+                }
+            }
+
+            // Игрок
+            player.update();
+            player.draw();
+
+            // Препятствия
+            spawnObstacle();
+            for (let i = 0; i < obstacles.length; i++) {
+                let obs = obstacles[i];
+                obs.update();
+                obs.draw();
+
+                if (checkCollision(player, obs)) {
+                    gameOver();
+                    return; // Остановка цикла
+                }
+
+                if (obs.x + obs.w < 0) {
+                    obstacles.splice(i, 1);
+                    i--;
+                    score += 10;
+                    scoreEl.textContent = score;
+                    
+                    // Постепенное увеличение скорости
+                    if (score % 100 === 0) {
+                        gameSpeed += 0.5;
+                    }
+                }
+            }
+
+            frames++;
+            gameLoopId = requestAnimationFrame(gameLoop);
+        }
+
+        // Управление (Клавиатура)
+        window.addEventListener('keydown', (e) => {
+            if ((e.code === 'Space' || e.code === 'ArrowUp') && isPlaying) {
+                e.preventDefault(); // Предотвращаем скролл страницы
+                player.jump();
+            }
+        });
+
+        // Управление (Касания/Клик)
+        const handleJump = (e) => {
+            if (e.target.id !== 'start-btn' && e.target.id !== 'restart-btn') {
+                e.preventDefault();
+                if (isPlaying) {
+                    player.jump();
+                }
+            }
+        };
+
+        canvas.addEventListener('touchstart', handleJump, {passive: false});
+        canvas.addEventListener('mousedown', handleJump);
+
+        // Кнопки интерфейса
+        startBtn.addEventListener('click', resetGame);
+        restartBtn.addEventListener('click', resetGame);
+
+        // Инициализация (отрисовка стартового кадра)
+        drawGround();
+    </script>
+</body>
+</html>
